@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fpvs-studio"
+version = "0.0.1"
+description = "Windows-only experiment runner for EEG fast periodic visual stimulation"
+readme = "README.md"
+authors = [{ name = "FPVS Studio Team" }]
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+  "PySide6",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-org/fpvs-studio"
+Repository = "https://github.com/your-org/fpvs-studio"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fpvs_studio*"]
