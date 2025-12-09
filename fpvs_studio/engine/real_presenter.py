@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import pyglet
+from pyglet import shapes
+from pyglet.window import key
 
 from fpvs_studio.controllers.scheduling import RunPlan, RunSegment
 from fpvs_studio.engine.presenter_base import Presenter, RunResult
@@ -20,10 +22,11 @@ class RealPresenter(Presenter):
     instruction text, and runs BLOCK/REST segments with FPVS base/oddball
     semantics.
 
-    Phase 6 scope:
+    Phase 7 scope:
     - Uses base and oddball image directories for each condition.
     - Emits trigger codes for base and oddball onsets and logs events.
-    - No fixation color changes or attention question.
+    - Draws a fixation cross with scheduled color changes (no triggers).
+    - Collects an end-of-run attention response when enabled.
     """
 
     def __init__(self, base_output_dir: Path, monitor_index: int = 0) -> None:
@@ -54,6 +57,40 @@ class RealPresenter(Presenter):
         prefix = f"{experiment.experiment_id}_{participant_id}_{timestamp}"
         event_log_path = self._base_output_dir / f"{prefix}_events.csv"
         summary_path = self._base_output_dir / f"{prefix}_summary.csv"
+
+        total_block_frames = 0
+        for segment in run_plan.segments:
+            if segment.segment_type == "BLOCK":
+                duration = segment.duration_seconds or experiment.block_duration_seconds
+                total_block_frames += int(duration * timing.frames_per_second)
+
+        attention_required = experiment.attention_enabled and n_fixation_changes > 0
+        if attention_required and n_fixation_changes > total_block_frames:
+            raise ValueError("n_fixation_changes exceeds total block frames.")
+
+        if attention_required:
+            step = total_block_frames / (n_fixation_changes + 1)
+            change_frame_indices: Sequence[int] = [
+                int(round(step * (i + 1))) for i in range(n_fixation_changes)
+            ]
+        else:
+            change_frame_indices = []
+
+        def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+            hex_value = hex_color.lstrip("#")
+            if len(hex_value) != 6:
+                raise ValueError(f"Invalid hex color: {hex_color}")
+            return tuple(int(hex_value[i : i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+
+        base_color_rgb = hex_to_rgb(experiment.fixation_base_color)
+        target_color_rgb = hex_to_rgb(experiment.fixation_target_color)
+        fixation_is_target = False
+        current_fixation_color = base_color_rgb
+        block_frame_counter = 0
+        next_change_index = 0
+        reported_change_count: Optional[int] = None
+        confirmed = False
+        attention_input_digits = ""
 
         base_textures_by_condition: dict[str, list[pyglet.image.AbstractImage]] = {}
         oddball_textures_by_condition: dict[str, list[pyglet.image.AbstractImage]] = {}
@@ -100,6 +137,8 @@ class RealPresenter(Presenter):
             segment: Optional[RunSegment] = None,
             base_cycle_index: Optional[int] = None,
             trigger_code: Optional[int] = None,
+            block_frame_index: Optional[int] = None,
+            fixation_state: Optional[str] = None,
         ) -> None:
             segment_type = segment.segment_type if segment else ""
             condition_id = segment.condition_id if segment else ""
@@ -112,6 +151,8 @@ class RealPresenter(Presenter):
                         condition_id or "",
                         "" if base_cycle_index is None else str(base_cycle_index),
                         "" if trigger_code is None else str(trigger_code),
+                        "" if block_frame_index is None else str(block_frame_index),
+                        fixation_state or "",
                     ]
                 )
             )
@@ -144,9 +185,84 @@ class RealPresenter(Presenter):
             anchor_x="center",
             anchor_y="center",
         )
-        complete_label = pyglet.text.Label(
-            "Experiment Complete", font_size=32, x=window.width // 2, y=window.height // 2, anchor_x="center", anchor_y="center"
+        attention_prompt_text = (
+            experiment.attention_question_text
+            if experiment.attention_question_text.strip()
+            else "How many times did the cross change color?"
         )
+        attention_prompt_label = pyglet.text.Label(
+            attention_prompt_text,
+            font_size=28,
+            x=window.width // 2,
+            y=int(window.height * 0.6),
+            anchor_x="center",
+            anchor_y="center",
+            multiline=True,
+            width=int(window.width * 0.8),
+        )
+        attention_input_label = pyglet.text.Label(
+            "",
+            font_size=48,
+            x=window.width // 2,
+            y=int(window.height * 0.45),
+            anchor_x="center",
+            anchor_y="center",
+        )
+        attention_confirm_label = pyglet.text.Label(
+            "",
+            font_size=28,
+            x=window.width // 2,
+            y=int(window.height * 0.3),
+            anchor_x="center",
+            anchor_y="center",
+            multiline=True,
+            width=int(window.width * 0.8),
+        )
+        complete_label = pyglet.text.Label(
+            "Experiment Complete — press any key to exit",
+            font_size=32,
+            x=window.width // 2,
+            y=window.height // 2,
+            anchor_x="center",
+            anchor_y="center",
+            multiline=True,
+            width=int(window.width * 0.8),
+        )
+
+        fixation_length = 40
+        fixation_thickness = 4
+        fixation_lines = [
+            shapes.Line(
+                window.width // 2 - fixation_length // 2,
+                window.height // 2,
+                window.width // 2 + fixation_length // 2,
+                window.height // 2,
+                width=fixation_thickness,
+                color=current_fixation_color,
+            ),
+            shapes.Line(
+                window.width // 2,
+                window.height // 2 - fixation_length // 2,
+                window.width // 2,
+                window.height // 2 + fixation_length // 2,
+                width=fixation_thickness,
+                color=current_fixation_color,
+            ),
+        ]
+
+        def update_fixation_color(rgb_color: tuple[int, int, int]) -> None:
+            for line in fixation_lines:
+                line.color = rgb_color
+
+        def refresh_attention_labels() -> None:
+            if running_state == "attention_confirm" and reported_change_count is not None:
+                attention_input_label.text = str(reported_change_count)
+                attention_confirm_label.text = (
+                    f"You entered {reported_change_count}. Press Y to confirm or N to edit."
+                )
+            else:
+                attention_input_label.text = attention_input_digits or " "
+                attention_confirm_label.text = "Press Enter to submit. Use Backspace to edit."
 
         current_segment_index = 0
         current_texture: Optional[pyglet.image.AbstractImage] = None
@@ -199,9 +315,25 @@ class RealPresenter(Presenter):
                 start_next_segment()
 
         def block_tick(dt: float) -> None:
-            nonlocal block_frame_count, base_cycle_frame, base_cycle_index, current_cycle_texture, base_texture_index, oddball_texture_index, current_texture
+            nonlocal block_frame_count, base_cycle_frame, base_cycle_index, current_cycle_texture, base_texture_index, oddball_texture_index, current_texture, fixation_is_target, current_fixation_color, next_change_index, block_frame_counter
             if not block_base_textures or not current_condition:
                 return
+
+            segment = run_plan.segments[current_segment_index - 1]
+
+            if attention_required and next_change_index < len(change_frame_indices):
+                if block_frame_counter == change_frame_indices[next_change_index]:
+                    fixation_is_target = not fixation_is_target
+                    current_fixation_color = target_color_rgb if fixation_is_target else base_color_rgb
+                    update_fixation_color(current_fixation_color)
+                    log_event(
+                        "fixation_change",
+                        segment=segment,
+                        base_cycle_index=base_cycle_index,
+                        block_frame_index=block_frame_counter,
+                        fixation_state="target" if fixation_is_target else "base",
+                    )
+                    next_change_index += 1
 
             if base_cycle_frame == 0:
                 is_oddball_cycle = (
@@ -227,7 +359,7 @@ class RealPresenter(Presenter):
                 marker.send(trigger_code)
                 log_event(
                     event_type,
-                    segment=run_plan.segments[current_segment_index - 1],
+                    segment=segment,
                     base_cycle_index=base_cycle_index,
                     trigger_code=trigger_code,
                 )
@@ -245,6 +377,7 @@ class RealPresenter(Presenter):
                 base_cycle_index += 1
 
             block_frame_count += 1
+            block_frame_counter += 1
             if block_frame_count >= target_block_frames:
                 end_block()
 
@@ -263,9 +396,12 @@ class RealPresenter(Presenter):
 
         def finish_run() -> None:
             nonlocal running_state
-            running_state = "complete"
             log_event("run_complete")
-            pyglet.clock.schedule_once(lambda dt: pyglet.app.exit(), 0.5)
+            if attention_required:
+                running_state = "attention_input"
+                refresh_attention_labels()
+            else:
+                running_state = "complete"
 
         @window.event
         def on_draw() -> None:
@@ -275,15 +411,45 @@ class RealPresenter(Presenter):
             elif running_state == "block":
                 if current_texture:
                     current_texture.blit(0, 0, width=window.width, height=window.height)
+                for line in fixation_lines:
+                    line.draw()
             elif running_state == "rest":
                 rest_label.draw()
+            elif running_state in {"attention_input", "attention_confirm"}:
+                attention_prompt_label.draw()
+                attention_input_label.draw()
+                attention_confirm_label.draw()
             elif running_state == "complete":
                 complete_label.draw()
 
         @window.event
         def on_key_press(symbol, modifiers):  # type: ignore[override]
+            nonlocal attention_input_digits, reported_change_count, confirmed, running_state
             if running_state == "instruction":
                 running_state_transition_from_instruction()
+            elif running_state == "attention_input":
+                if symbol in {key.ENTER, key.RETURN}:
+                    if attention_input_digits:
+                        reported_change_count = int(attention_input_digits)
+                        running_state = "attention_confirm"
+                        refresh_attention_labels()
+                elif symbol == key.BACKSPACE:
+                    attention_input_digits = attention_input_digits[:-1]
+                    refresh_attention_labels()
+                elif key._0 <= symbol <= key._9:
+                    attention_input_digits = attention_input_digits + str(symbol - key._0)
+                    refresh_attention_labels()
+            elif running_state == "attention_confirm":
+                if symbol == key.Y and reported_change_count is not None:
+                    confirmed = True
+                    running_state = "complete"
+                elif symbol == key.N:
+                    reported_change_count = None
+                    attention_input_digits = ""
+                    running_state = "attention_input"
+                    refresh_attention_labels()
+            elif running_state == "complete":
+                pyglet.app.exit()
 
         def running_state_transition_from_instruction() -> None:
             nonlocal running_state
@@ -304,12 +470,19 @@ class RealPresenter(Presenter):
         if aborted:
             log_event("aborted")
 
-        header = "timestamp,event_type,segment_type,condition_id,base_cycle_index,trigger_code\n"
+        header = "timestamp,event_type,segment_type,condition_id,base_cycle_index,trigger_code,block_frame_index,fixation_state\n"
         event_log_path.write_text(header + "\n".join(event_rows))
 
+        true_change_count = n_fixation_changes if experiment.attention_enabled else 0
+        correct = None
+        absolute_error = None
+        if experiment.attention_enabled and reported_change_count is not None:
+            correct = reported_change_count == n_fixation_changes
+            absolute_error = abs(reported_change_count - n_fixation_changes)
+
         summary_lines = [
-            "participant_id,experiment_id,attention_enabled,n_fixation_changes,notes",
-            f"{participant_id},{experiment.experiment_id},{experiment.attention_enabled},{n_fixation_changes},Phase6_real_presenter_fpvs_base_oddball=yes",
+            "participant_id,experiment_id,attention_enabled,n_fixation_changes,true_change_count,reported_change_count,correct,absolute_error,notes",
+            f"{participant_id},{experiment.experiment_id},{experiment.attention_enabled},{n_fixation_changes},{true_change_count},{'' if reported_change_count is None else reported_change_count},{'' if correct is None else correct},{'' if absolute_error is None else absolute_error},Phase7_real_presenter_fpvs_base_oddball=yes",
         ]
         summary_path.write_text("\n".join(summary_lines))
 
@@ -320,11 +493,11 @@ class RealPresenter(Presenter):
             abort_reason=abort_reason,
             attention_enabled=experiment.attention_enabled,
             n_fixation_changes=n_fixation_changes,
-            true_change_count=0,
-            reported_change_count=None,
-            confirmed=False,
-            correct=None,
-            absolute_error=None,
+            true_change_count=true_change_count,
+            reported_change_count=reported_change_count,
+            confirmed=confirmed,
+            correct=correct,
+            absolute_error=absolute_error,
             event_log_path=event_log_path,
             run_summary_path=summary_path,
         )
