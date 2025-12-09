@@ -1,1 +1,2 @@
 PySide6
+pyglet>=2.0.0
