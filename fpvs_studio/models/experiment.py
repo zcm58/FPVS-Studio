@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from .condition import ConditionModel
+from .exceptions import TimingValidationError
+from .timing import TimingDerived, compute_timing
 
 
 @dataclass
@@ -33,3 +35,22 @@ class ExperimentModel:
     attention_question_text: str
     monitor_refresh_hz: Optional[int] = None
     conditions: List[ConditionModel] = field(default_factory=list)
+
+    def derive_timing(self, monitor_refresh_hz: Optional[int] = None) -> TimingDerived:
+        """Compute and validate frame-based timing for this experiment.
+
+        If ``monitor_refresh_hz`` is not provided, the model's stored monitor
+        refresh rate will be used. A :class:`TimingValidationError` is raised if
+        timing cannot be represented cleanly at the given refresh rate.
+        """
+
+        refresh_rate = monitor_refresh_hz if monitor_refresh_hz is not None else self.monitor_refresh_hz
+        if refresh_rate is None:
+            raise TimingValidationError(
+                "Monitor refresh rate must be specified to derive timing.",
+                base_rate_hz=self.base_rate_hz,
+                oddball_rate_hz=self.oddball_rate_hz,
+                monitor_refresh_hz=self.monitor_refresh_hz,
+            )
+
+        return compute_timing(self, refresh_rate)
