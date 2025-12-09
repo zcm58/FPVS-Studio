@@ -17,12 +17,13 @@ from fpvs_studio.models.timing import TimingDerived
 class RealPresenter(Presenter):
     """
     Real presenter that opens a full-screen pyglet window, displays the
-    instruction text, and runs BLOCK/REST segments using base images only.
+    instruction text, and runs BLOCK/REST segments with FPVS base/oddball
+    semantics.
 
-    Phase 5 scope:
-    - Uses only base_image_dir from each condition (no oddball logic yet).
+    Phase 6 scope:
+    - Uses base and oddball image directories for each condition.
+    - Emits trigger codes for base and oddball onsets and logs events.
     - No fixation color changes or attention question.
-    - Writes simple CSV logs, similar in spirit to DummyPresenter.
     """
 
     def __init__(self, base_output_dir: Path, monitor_index: int = 0) -> None:
@@ -55,7 +56,9 @@ class RealPresenter(Presenter):
         summary_path = self._base_output_dir / f"{prefix}_summary.csv"
 
         base_textures_by_condition: dict[str, list[pyglet.image.AbstractImage]] = {}
+        oddball_textures_by_condition: dict[str, list[pyglet.image.AbstractImage]] = {}
         allowed_extensions = {".png", ".jpg", ".jpeg", ".bmp"}
+        conditions_by_id = {condition.id: condition for condition in experiment.conditions}
         for condition in experiment.conditions:
             base_dir = Path(condition.base_image_dir)
             if not base_dir.exists():
@@ -72,13 +75,45 @@ class RealPresenter(Presenter):
             textures = [pyglet.image.load(str(path)) for path in sorted(images)]
             base_textures_by_condition[condition.id] = textures
 
+            oddball_dir = Path(condition.oddball_image_dir)
+            if not oddball_dir.exists():
+                raise FileNotFoundError(f"Oddball image directory not found: {oddball_dir}")
+
+            oddball_images = [
+                path
+                for path in oddball_dir.iterdir()
+                if path.suffix.lower() in allowed_extensions and path.is_file()
+            ]
+            if not oddball_images:
+                raise ValueError(
+                    f"No oddball images found for condition {condition.id} in {oddball_dir}"
+                )
+
+            oddball_textures_by_condition[condition.id] = [
+                pyglet.image.load(str(path)) for path in sorted(oddball_images)
+            ]
+
         event_rows: list[str] = []
 
-        def log_event(event_type: str, segment: Optional[RunSegment] = None) -> None:
+        def log_event(
+            event_type: str,
+            segment: Optional[RunSegment] = None,
+            base_cycle_index: Optional[int] = None,
+            trigger_code: Optional[int] = None,
+        ) -> None:
             segment_type = segment.segment_type if segment else ""
             condition_id = segment.condition_id if segment else ""
             event_rows.append(
-                f"{datetime.now().isoformat()},{event_type},{segment_type},{condition_id or ''}"
+                ",".join(
+                    [
+                        datetime.now().isoformat(timespec="milliseconds"),
+                        event_type,
+                        segment_type,
+                        condition_id or "",
+                        "" if base_cycle_index is None else str(base_cycle_index),
+                        "" if trigger_code is None else str(trigger_code),
+                    ]
+                )
             )
 
         aborted = False
@@ -117,13 +152,18 @@ class RealPresenter(Presenter):
         current_texture: Optional[pyglet.image.AbstractImage] = None
         block_frame_count = 0
         target_block_frames = 0
-        block_textures: list[pyglet.image.AbstractImage] = []
-        block_texture_index = 0
+        block_base_textures: list[pyglet.image.AbstractImage] = []
+        block_oddball_textures: list[pyglet.image.AbstractImage] = []
         base_cycle_frame = 0
+        base_cycle_index = 0
+        base_texture_index = 0
+        oddball_texture_index = 0
         running_state = "instruction"
+        current_condition: Optional[str] = None
+        current_cycle_texture: Optional[pyglet.image.AbstractImage] = None
 
         def start_next_segment() -> None:
-            nonlocal current_segment_index, block_frame_count, target_block_frames, block_textures, block_texture_index, running_state
+            nonlocal current_segment_index, block_frame_count, target_block_frames, block_base_textures, block_oddball_textures, running_state, base_cycle_frame, base_cycle_index, base_texture_index, oddball_texture_index, current_condition
             if current_segment_index >= len(run_plan.segments):
                 finish_run()
                 return
@@ -132,11 +172,20 @@ class RealPresenter(Presenter):
             current_segment_index += 1
 
             if segment.segment_type == "BLOCK" and segment.condition_id:
-                block_textures = base_textures_by_condition[segment.condition_id]
-                block_texture_index = 0
+                condition_id = segment.condition_id
+                if condition_id not in base_textures_by_condition or condition_id not in oddball_textures_by_condition:
+                    raise ValueError(f"Textures not loaded for condition {condition_id}")
+
+                block_base_textures = base_textures_by_condition[condition_id]
+                block_oddball_textures = oddball_textures_by_condition[condition_id]
                 block_frame_count = 0
-                target_block_frames = int(experiment.block_duration_seconds * timing.frames_per_second)
+                target_seconds = segment.duration_seconds or experiment.block_duration_seconds
+                target_block_frames = int(target_seconds * timing.frames_per_second)
                 base_cycle_frame = 0
+                base_cycle_index = 0
+                base_texture_index = 0
+                oddball_texture_index = 0
+                current_condition = condition_id
                 running_state = "block"
                 marker.send(0)
                 log_event("block_start", segment)
@@ -150,27 +199,50 @@ class RealPresenter(Presenter):
                 start_next_segment()
 
         def block_tick(dt: float) -> None:
-            nonlocal block_frame_count, block_texture_index, base_cycle_frame, current_texture
-            if not block_textures:
+            nonlocal block_frame_count, base_cycle_frame, base_cycle_index, current_cycle_texture, base_texture_index, oddball_texture_index, current_texture
+            if not block_base_textures or not current_condition:
                 return
 
             if base_cycle_frame == 0:
-                current_texture = block_textures[block_texture_index % len(block_textures)]
+                is_oddball_cycle = (
+                    timing.oddball_every_n_base > 0
+                    and base_cycle_index % timing.oddball_every_n_base == timing.oddball_every_n_base - 1
+                )
+                condition = conditions_by_id[current_condition]
+                if is_oddball_cycle:
+                    current_cycle_texture = block_oddball_textures[
+                        oddball_texture_index % len(block_oddball_textures)
+                    ]
+                    oddball_texture_index += 1
+                    trigger_code = condition.trigger_code_oddball
+                    event_type = "oddball_onset"
+                else:
+                    current_cycle_texture = block_base_textures[
+                        base_texture_index % len(block_base_textures)
+                    ]
+                    base_texture_index += 1
+                    trigger_code = condition.trigger_code_base
+                    event_type = "base_onset"
+
+                marker.send(trigger_code)
+                log_event(
+                    event_type,
+                    segment=run_plan.segments[current_segment_index - 1],
+                    base_cycle_index=base_cycle_index,
+                    trigger_code=trigger_code,
+                )
 
             if base_cycle_frame < timing.image_on_frames:
-                # keep displaying the current texture
-                current_texture = block_textures[block_texture_index % len(block_textures)]
+                current_texture = current_cycle_texture
             elif base_cycle_frame < timing.image_on_frames + timing.blank_frames:
-                # explicit blank period within the base cycle
                 current_texture = None
             else:
-                # stay blank for any remaining frames in the cycle
                 current_texture = None
 
             base_cycle_frame += 1
             if base_cycle_frame >= timing.frames_per_base_cycle:
                 base_cycle_frame = 0
-                block_texture_index += 1
+                base_cycle_index += 1
 
             block_frame_count += 1
             if block_frame_count >= target_block_frames:
@@ -232,12 +304,12 @@ class RealPresenter(Presenter):
         if aborted:
             log_event("aborted")
 
-        header = "timestamp,event_type,segment_type,condition_id\n"
+        header = "timestamp,event_type,segment_type,condition_id,base_cycle_index,trigger_code\n"
         event_log_path.write_text(header + "\n".join(event_rows))
 
         summary_lines = [
             "participant_id,experiment_id,attention_enabled,n_fixation_changes,notes",
-            f"{participant_id},{experiment.experiment_id},{experiment.attention_enabled},{n_fixation_changes},Phase5_real_presenter_base_only=yes",
+            f"{participant_id},{experiment.experiment_id},{experiment.attention_enabled},{n_fixation_changes},Phase6_real_presenter_fpvs_base_oddball=yes",
         ]
         summary_path.write_text("\n".join(summary_lines))
 
