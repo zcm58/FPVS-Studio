@@ -32,6 +32,8 @@ class ExperimentController:
             attention_enabled=False,
             fixation_min_changes=0,
             fixation_max_changes=0,
+            fixation_base_color="#0000FF",
+            fixation_target_color="#FF0000",
             instruction_text="",
             attention_question_text="",
             monitor_refresh_hz=None,

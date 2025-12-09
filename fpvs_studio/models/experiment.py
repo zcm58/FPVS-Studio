@@ -31,6 +31,8 @@ class ExperimentModel:
     attention_enabled: bool
     fixation_min_changes: int
     fixation_max_changes: int
+    fixation_base_color: str = "#0000FF"
+    fixation_target_color: str = "#FF0000"
     instruction_text: str
     attention_question_text: str
     monitor_refresh_hz: Optional[int] = None
