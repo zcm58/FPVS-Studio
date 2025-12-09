@@ -76,20 +76,20 @@ def build_run_plan(
             )
             block_index += 1
 
-            is_last_block = block_index == total_blocks
-            if (
-                experiment.rest_enabled
-                and experiment.rest_default_seconds > 0
-                and not is_last_block
-            ):
-                segments.append(
-                    RunSegment(
-                        segment_type="REST",
-                        duration_seconds=experiment.rest_default_seconds,
-                        after_cycle_index=cycle_index,
-                        after_block_index=block_index - 1,
-                    )
+        is_last_cycle = cycle_index == experiment.num_cycles - 1
+        if (
+            experiment.rest_enabled
+            and experiment.rest_default_seconds > 0
+            and not is_last_cycle
+        ):
+            segments.append(
+                RunSegment(
+                    segment_type="REST",
+                    duration_seconds=experiment.rest_default_seconds,
+                    after_cycle_index=cycle_index,
+                    after_block_index=block_index - 1,
                 )
+            )
 
     return RunPlan(segments=segments)
 

@@ -33,8 +33,8 @@ class ExperimentModel:
     fixation_max_changes: int
     fixation_base_color: str = "#0000FF"
     fixation_target_color: str = "#FF0000"
-    instruction_text: str
-    attention_question_text: str
+    instruction_text: str = ""
+    attention_question_text: str = ""
     monitor_refresh_hz: Optional[int] = None
     conditions: List[ConditionModel] = field(default_factory=list)
 
