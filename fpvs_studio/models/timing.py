@@ -71,6 +71,30 @@ def compute_timing(experiment: "ExperimentModel", monitor_refresh_hz: int) -> Ti
     base_rate = experiment.base_rate_hz
     oddball_rate = experiment.oddball_rate_hz
 
+    if base_rate <= 0:
+        raise TimingValidationError(
+            "Base rate must be greater than zero.",
+            base_rate_hz=base_rate,
+            oddball_rate_hz=oddball_rate,
+            monitor_refresh_hz=monitor_refresh_hz,
+        )
+
+    if oddball_rate <= 0:
+        raise TimingValidationError(
+            "Oddball rate must be greater than zero.",
+            base_rate_hz=base_rate,
+            oddball_rate_hz=oddball_rate,
+            monitor_refresh_hz=monitor_refresh_hz,
+        )
+
+    if monitor_refresh_hz <= 0:
+        raise TimingValidationError(
+            "Monitor refresh rate must be greater than zero.",
+            base_rate_hz=base_rate,
+            oddball_rate_hz=oddball_rate,
+            monitor_refresh_hz=monitor_refresh_hz,
+        )
+
     frames_per_second = monitor_refresh_hz
     frames_per_base_cycle_float = frames_per_second / base_rate
     frames_per_base_cycle = int(round(frames_per_base_cycle_float))
