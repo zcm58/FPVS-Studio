@@ -119,6 +119,7 @@ class RealPresenter(Presenter):
         target_block_frames = 0
         block_textures: list[pyglet.image.AbstractImage] = []
         block_texture_index = 0
+        base_cycle_frame = 0
         running_state = "instruction"
 
         def start_next_segment() -> None:
@@ -135,6 +136,7 @@ class RealPresenter(Presenter):
                 block_texture_index = 0
                 block_frame_count = 0
                 target_block_frames = int(experiment.block_duration_seconds * timing.frames_per_second)
+                base_cycle_frame = 0
                 running_state = "block"
                 marker.send(0)
                 log_event("block_start", segment)
@@ -148,11 +150,28 @@ class RealPresenter(Presenter):
                 start_next_segment()
 
         def block_tick(dt: float) -> None:
-            nonlocal block_frame_count, block_texture_index, current_texture
+            nonlocal block_frame_count, block_texture_index, base_cycle_frame, current_texture
             if not block_textures:
                 return
-            current_texture = block_textures[block_texture_index % len(block_textures)]
-            block_texture_index += 1
+
+            if base_cycle_frame == 0:
+                current_texture = block_textures[block_texture_index % len(block_textures)]
+
+            if base_cycle_frame < timing.image_on_frames:
+                # keep displaying the current texture
+                current_texture = block_textures[block_texture_index % len(block_textures)]
+            elif base_cycle_frame < timing.image_on_frames + timing.blank_frames:
+                # explicit blank period within the base cycle
+                current_texture = None
+            else:
+                # stay blank for any remaining frames in the cycle
+                current_texture = None
+
+            base_cycle_frame += 1
+            if base_cycle_frame >= timing.frames_per_base_cycle:
+                base_cycle_frame = 0
+                block_texture_index += 1
+
             block_frame_count += 1
             if block_frame_count >= target_block_frames:
                 end_block()
